@@ -33,3 +33,7 @@ Upload a video, pick a language, download the result.
 - Python 3.10+
 - ffmpeg
 - 8 GB+ RAM recommended
+
+## Performance
+
+Tested on an Intel i5-12400T (10 cores, 8 GB RAM VM). A 40 MB, 5-minute video completed in ~120 seconds (Whisper base model, English → English re-voice).
