@@ -1,4 +1,4 @@
-function DubProgress({ job, onDownload, onDub }) {
+function DubProgress({ job, onDownload }) {
   if (!job) return null;
 
   const pct = job.total > 0 ? Math.round((job.step / job.total) * 100) : 0;
@@ -8,36 +8,49 @@ function DubProgress({ job, onDownload, onDub }) {
     "Generating speech", "Processing video", "Concatenating", "Done"
   ];
 
+  const isQueued = job.status === "queued";
+  const isProcessing = job.status === "processing";
+  const isDone = job.status === "done";
+  const isError = job.status === "error";
+
   return React.createElement("div", { className: "fade-in space-y-4 mt-6" },
 
     React.createElement("div", { className: "flex items-center justify-between text-sm" },
       React.createElement("span", { className: "font-medium text-stone-700" },
-        job.status === "done" ? "Complete" :
-        job.status === "error" ? "Failed" :
+        isDone ? "Complete" :
+        isError ? "Failed" :
+        isQueued ? `Queued` :
         `${job.label || "Processing..."}`
       ),
       React.createElement("span", { className: "text-stone-400" },
-        job.status === "done" ? `${job.duration_s}s` :
-        job.status === "error" ? "" :
+        isDone ? `${job.duration_s}s` :
+        isError ? "" :
+        isQueued && job.position ? `#${job.position}` :
+        isQueued ? "waiting..." :
         `${job.step}/${job.total}`
       )
     ),
 
-    job.status === "error"
+    isQueued && job.position && job.position > 1 &&
+      React.createElement("div", { className: "text-xs text-stone-400 text-center" },
+        `${job.position - 1} job${job.position - 1 > 1 ? 's' : ''} ahead of you`
+      ),
+
+    isError
       ? React.createElement("div", { className: "alert alert-error text-sm" },
           React.createElement("i", { "data-lucide": "alert-triangle", className: "w-4 h-4" }),
           React.createElement("span", null, job.error || "An error occurred")
         )
-      : React.createElement("div", { className: "w-full bg-stone-100 rounded-full h-2 overflow-hidden" },
+      : !isQueued && React.createElement("div", { className: "w-full bg-stone-100 rounded-full h-2 overflow-hidden" },
           React.createElement("div", {
             className: `h-full rounded-full transition-all duration-500 ease-out ${
-              job.status === "done" ? "bg-green-500" : "bg-stone-700"
+              isDone ? "bg-green-500" : "bg-stone-700 animate-pulse"
             }`,
-            style: { width: `${pct}%` }
+            style: { width: isQueued ? "0%" : `${pct}%` }
           })
         ),
 
-    job.status !== "done" && job.status !== "error" &&
+    !isQueued && !isDone && !isError &&
       React.createElement("div", { className: "flex gap-1.5" },
         states.slice(0, job.step + 1).map((s, i) =>
           React.createElement("div", {
@@ -51,7 +64,7 @@ function DubProgress({ job, onDownload, onDub }) {
         )
       ),
 
-    job.status === "done" &&
+    isDone &&
       React.createElement("button", {
         onClick: onDownload,
         className: "btn btn-neutral w-full gap-2"

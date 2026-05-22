@@ -16,7 +16,78 @@ UPLOAD_DIR = "/tmp/dubb_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 JOBS = {}
+QUEUE = []
+PROCESSING = None
+RATE_LIMIT = {}
 LOCK = threading.Lock()
+
+MAX_SIZE = 50 * 1024 * 1024
+MAX_QUEUED = 5
+RATE_WINDOW = 5 * 60
+ARTIFACT_TTL = 2 * 3600
+CLEANUP_INTERVAL = 5 * 60
+
+
+def rate_cleanup():
+    now = time.time()
+    for ip in list(RATE_LIMIT.keys()):
+        if now - RATE_LIMIT[ip] > RATE_WINDOW:
+            del RATE_LIMIT[ip]
+
+
+def artifact_cleanup():
+    now = time.time()
+    with LOCK:
+        for jid in list(JOBS.keys()):
+            j = JOBS[jid]
+            if j["status"] in ("done", "error") and jid not in QUEUE:
+                started = j.get("started_at", 0)
+                if started and now - started > ARTIFACT_TTL:
+                    out_dir = os.path.join(UPLOAD_DIR, f"{jid}_out")
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                    out = j.get("output", "")
+                    if out and os.path.exists(out):
+                        os.remove(out)
+                    del JOBS[jid]
+                    logging.info(f"Cleaned up artifact {jid}")
+
+
+def cleanup_loop():
+    while True:
+        time.sleep(CLEANUP_INTERVAL)
+        try:
+            with LOCK:
+                rate_cleanup()
+            artifact_cleanup()
+        except Exception:
+            pass
+
+
+def dispatch_next():
+    global PROCESSING
+    if PROCESSING is not None:
+        return
+    if not QUEUE:
+        return
+    job_id = QUEUE.pop(0)
+    PROCESSING = job_id
+    j = JOBS.get(job_id)
+    if j:
+        j["status"] = "processing"
+        j["started_at"] = time.time()
+        runner = JobRunner(
+            job_id, j["file_path"], j["target_lang"],
+            j["source_lang"], j["voice"], j.get("model", "base")
+        )
+        runner.start()
+
+
+def on_job_done(job_id):
+    global PROCESSING
+    with LOCK:
+        if PROCESSING == job_id:
+            PROCESSING = None
+        dispatch_next()
 
 
 def parse_multipart(body, boundary):
@@ -70,10 +141,6 @@ class JobRunner(threading.Thread):
             os.makedirs(out_dir, exist_ok=True)
             output_path = os.path.join(out_dir, "dubbed.mp4")
 
-            with LOCK:
-                if self.job_id in JOBS:
-                    JOBS[self.job_id]["status"] = "processing"
-
             progress(0, 6, "Starting")
             actual_out = run_pipeline(
                 self.video_path, self.target_lang,
@@ -99,6 +166,8 @@ class JobRunner(threading.Thread):
                         "status": "error",
                         "error": str(e)
                     })
+        finally:
+            on_job_done(self.job_id)
 
 
 class APIHandler(BaseHTTPRequestHandler):
@@ -135,7 +204,7 @@ class APIHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(sz))
-        self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(path)}"')
+        self.send_header("Content-Disposition", f'attachment; filename="dubbed_{os.path.basename(path)}"')
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         with open(path, "rb") as f:
@@ -179,26 +248,39 @@ class APIHandler(BaseHTTPRequestHandler):
 
     def _handle_upload(self):
         ct = self.headers.get("Content-Type", "")
-        if "multipart/form-data" in ct:
-            boundary = ct.split("boundary=")[-1]
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            parts = parse_multipart(body, boundary)
-            filename = parts.get("filename", "upload")
-            data = parts.get("body")
-            if not data:
-                self._json({"error": "No file data"}, 400)
-                return
-            file_id = str(uuid.uuid4())[:8]
-            ext = os.path.splitext(filename)[1] or ".mp4"
-            dest = os.path.join(UPLOAD_DIR, f"{file_id}{ext}")
-            with open(dest, "wb") as f:
-                f.write(data)
-            self._json({"ok": True, "file_id": file_id, "filename": filename, "path": dest})
-        else:
+        if "multipart/form-data" not in ct:
             self._json({"error": "Expected multipart/form-data"}, 400)
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_SIZE:
+            self._json({"error": f"File too large (max {MAX_SIZE // (1024*1024)} MB)"}, 413)
+            return
+        boundary = ct.split("boundary=")[-1]
+        body = self.rfile.read(length)
+        parts = parse_multipart(body, boundary)
+        filename = parts.get("filename", "upload")
+        data = parts.get("body")
+        if not data:
+            self._json({"error": "No file data"}, 400)
+            return
+        file_id = str(uuid.uuid4())[:8]
+        ext = os.path.splitext(filename)[1] or ".mp4"
+        dest = os.path.join(UPLOAD_DIR, f"{file_id}{ext}")
+        with open(dest, "wb") as f:
+            f.write(data)
+        self._json({"ok": True, "file_id": file_id, "filename": filename, "path": dest, "size": length})
 
     def _handle_dub(self):
+        client_ip = self.client_address[0]
+
+        with LOCK:
+            rate_cleanup()
+            last = RATE_LIMIT.get(client_ip, 0)
+            if time.time() - last < RATE_WINDOW:
+                remaining = int(RATE_WINDOW - (time.time() - last))
+                self._json({"error": f"Rate limited. Try again in {remaining}s"}, 429)
+                return
+
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length))
         file_path = body.get("file_path")
@@ -211,8 +293,15 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json({"error": "Invalid file_path"}, 400)
             return
 
+        with LOCK:
+            queued_count = sum(1 for j in JOBS.values() if j["status"] in ("queued", "processing"))
+            if queued_count >= MAX_QUEUED:
+                self._json({"error": "Queue full (max 5 queued). Try again later."}, 503)
+                return
+
         job_id = str(uuid.uuid4())[:8]
         with LOCK:
+            RATE_LIMIT[client_ip] = time.time()
             JOBS[job_id] = {
                 "id": job_id,
                 "status": "queued",
@@ -220,22 +309,26 @@ class APIHandler(BaseHTTPRequestHandler):
                 "target_lang": target_lang,
                 "source_lang": source_lang,
                 "voice": voice,
+                "model": model,
                 "step": 0,
                 "total": 6,
                 "label": "Queued",
                 "started_at": time.time(),
                 "duration_s": 0,
             }
+            QUEUE.append(job_id)
+            dispatch_next()
 
-        runner = JobRunner(job_id, file_path, target_lang, source_lang, voice, model)
-        runner.start()
         self._json({"ok": True, "job_id": job_id})
 
     def _handle_get_jobs(self):
         with LOCK:
             jobs = dict(JOBS)
+            queue = list(QUEUE)
+            processing = PROCESSING
         out = {}
         for jid, j in jobs.items():
+            pos = queue.index(jid) + 1 if jid in queue else None
             out[jid] = {
                 "id": j["id"],
                 "status": j["status"],
@@ -244,9 +337,11 @@ class APIHandler(BaseHTTPRequestHandler):
                 "label": j["label"],
                 "duration_s": round(j.get("duration_s", 0), 1),
                 "target_lang": j["target_lang"],
+                "position": pos,
+                "queued_before": pos - 1 if pos and pos > 1 else None,
                 "error": j.get("error"),
             }
-        self._json({"ok": True, "jobs": out})
+        self._json({"ok": True, "jobs": out, "processing": processing})
 
     def _handle_download(self, job_id):
         with LOCK:
@@ -271,6 +366,8 @@ def start_server(port=8080):
     if html_path.exists():
         SERVE_HTML = html_path.read_text()
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(message)s")
+    t = threading.Thread(target=cleanup_loop, daemon=True)
+    t.start()
     server = HTTPServer(("0.0.0.0", port), APIHandler)
     logging.info(f"Dubb server on http://0.0.0.0:{port}")
     logging.info(f"UI at http://localhost:{port}/ui")

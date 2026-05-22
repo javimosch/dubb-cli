@@ -39,19 +39,25 @@ function DubView({ addToast }) {
   const [targetLang, setTargetLang] = React.useState("es");
   const [voice, setVoice] = React.useState("");
   const [jobs, setJobs] = React.useState({});
-  const [activeJob, setActiveJob] = React.useState(null);
+  const [activeJobId, setActiveJobId] = React.useState(null);
 
   React.useEffect(() => {
     if (typeof lucide !== "undefined") lucide.createIcons();
-  }, [file, uploading, jobs, activeJob]);
+  }, [file, uploading, jobs, activeJobId]);
 
   React.useEffect(() => {
     const stop = API.pollJobs((all) => {
       setJobs(all);
-      const running = Object.values(all).find(j => j.status === "queued" || j.status === "processing");
-      if (running) setActiveJob(running.id);
-      else if (activeJob && all[activeJob]?.status === "done") {
-        addToast("Dubbing complete!", "success");
+      const active = Object.values(all).find(j => j.status === "queued" || j.status === "processing");
+      if (active) {
+        setActiveJobId(active.id);
+      } else {
+        const prev = activeJobId;
+        if (prev && all[prev]?.status === "done") {
+          addToast("Dubbing complete!", "success");
+        } else if (prev && all[prev]?.status === "error") {
+          addToast("Dubbing failed", "error");
+        }
       }
     });
     return stop;
@@ -61,7 +67,6 @@ function DubView({ addToast }) {
     setFile(f);
     if (!f) { setFilePath(null); return; }
     setUploading(true);
-    const toastId = addToast("Uploading...", "loading", 0);
     try {
       const r = await API.upload(f);
       if (r.ok) {
@@ -79,7 +84,6 @@ function DubView({ addToast }) {
 
   const handleDub = async () => {
     if (!filePath) return;
-    const toastId = addToast("Starting dubbing job...", "loading", 0);
     try {
       const r = await API.dub({
         file_path: filePath,
@@ -87,7 +91,8 @@ function DubView({ addToast }) {
         voice: voice || null,
       });
       if (r.ok) {
-        setActiveJob(r.job_id);
+        setActiveJobId(r.job_id);
+        addToast("Job queued", "success");
       } else {
         addToast(r.error || "Failed to start", "error");
       }
@@ -96,7 +101,8 @@ function DubView({ addToast }) {
     }
   };
 
-  const active = activeJob ? jobs[activeJob] : null;
+  const active = activeJobId ? jobs[activeJobId] : null;
+  const hasActive = Object.values(jobs).some(j => j.status === "queued" || j.status === "processing");
 
   return React.createElement("div", { className: "max-w-xl mx-auto px-4 py-10 space-y-6" },
 
@@ -107,9 +113,9 @@ function DubView({ addToast }) {
       )
     ),
 
-    React.createElement(UploadZone, { onFile: handleFile, disabled: uploading }),
+    React.createElement(UploadZone, { onFile: handleFile, disabled: uploading || hasActive }),
 
-    filePath && React.createElement("div", { className: "fade-in space-y-4" },
+    filePath && !hasActive && React.createElement("div", { className: "fade-in space-y-4" },
 
       React.createElement("div", { className: "flex flex-col gap-1.5" },
         React.createElement("label", { className: "text-xs font-medium text-stone-500 uppercase tracking-wider" }, "Dub to"),
@@ -140,17 +146,16 @@ function DubView({ addToast }) {
 
       React.createElement("button", {
         onClick: handleDub,
-        disabled: !!active,
         className: "btn btn-neutral w-full gap-2"
       },
         React.createElement("i", { "data-lucide": "wand-2", className: "w-4 h-4" }),
-        active ? "Dubbing in progress..." : "Dub Video"
+        "Dub Video"
       )
     ),
 
     React.createElement(DubProgress, {
       job: active,
-      onDownload: () => { window.open(API.downloadUrl(activeJob), "_blank"); },
+      onDownload: () => { window.open(API.downloadUrl(activeJobId), "_blank"); },
     })
 
   );
