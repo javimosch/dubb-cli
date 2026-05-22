@@ -40,10 +40,15 @@ function DubView({ addToast }) {
   const [voice, setVoice] = React.useState("");
   const [jobs, setJobs] = React.useState({});
   const [activeJobId, setActiveJobId] = React.useState(null);
+  const [sample, setSample] = React.useState(null);
 
   React.useEffect(() => {
     if (typeof lucide !== "undefined") lucide.createIcons();
-  }, [file, uploading, jobs, activeJobId]);
+  }, [file, uploading, jobs, activeJobId, sample]);
+
+  React.useEffect(() => {
+    fetch("/api/sample").then(r => r.json()).then(setSample).catch(() => {});
+  }, []);
 
   React.useEffect(() => {
     const stop = API.pollJobs((all) => {
@@ -82,6 +87,12 @@ function DubView({ addToast }) {
     }
   };
 
+  const handleSample = () => {
+    setFilePath("/root/projects/dubb-cli/sample/cat-driving.mp4");
+    setFile({ name: "cat-driving.mp4" });
+    addToast("Sample loaded", "success");
+  };
+
   const handleDub = async () => {
     if (!filePath) return;
     try {
@@ -109,11 +120,23 @@ function DubView({ addToast }) {
     React.createElement("div", { className: "text-center" },
       React.createElement("h1", { className: "text-2xl font-semibold text-stone-800" }, "Dubb CLI"),
       React.createElement("p", { className: "text-sm text-stone-400 mt-1" },
-        "Upload a video, pick a language, get it dubbed"
+        "Upload a video or try the demo"
       )
     ),
 
     React.createElement(UploadZone, { onFile: handleFile, disabled: uploading || hasActive }),
+
+    sample && sample.available && !file && !hasActive &&
+      React.createElement("div", { className: "text-center" },
+        React.createElement("div", { className: "divider text-xs text-stone-300" }, "OR"),
+        React.createElement("button", {
+          onClick: handleSample,
+          className: "btn btn-ghost btn-sm gap-2 border border-stone-200"
+        },
+          React.createElement("i", { "data-lucide": "play", className: "w-4 h-4" }),
+          `Try sample (${sample.size_mb} MB)`
+        )
+      ),
 
     filePath && !hasActive && React.createElement("div", { className: "fade-in space-y-4" },
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from .dubb import run_pipeline
 
 UPLOAD_DIR = "/tmp/dubb_uploads"
+BASE_DIR = Path(__file__).parent.parent
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 JOBS = {}
@@ -26,6 +27,9 @@ MAX_QUEUED = 5
 RATE_WINDOW = 5 * 60
 ARTIFACT_TTL = 2 * 3600
 CLEANUP_INTERVAL = 5 * 60
+
+SAMPLE_FILE = os.getenv("DUBB_SAMPLE_FILE", str(BASE_DIR / "sample" / "cat-driving.mp4"))
+SAMPLE_DUBBED = os.getenv("DUBB_SAMPLE_DUBBED", str(BASE_DIR / "sample" / "cat-driving_dubbed.mp4"))
 
 
 def rate_cleanup():
@@ -232,6 +236,10 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json({"status": "healthy"})
         elif self.path.startswith("/api/jobs"):
             self._handle_get_jobs()
+        elif self.path == "/api/sample":
+            self._handle_sample()
+        elif self.path == "/api/sample/download":
+            self._handle_sample_download()
         elif self.path.startswith("/api/download/"):
             job_id = self.path.split("/")[-1]
             self._handle_download(job_id)
@@ -357,6 +365,24 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json({"error": "Output not found"}, 404)
             return
         self._file_response(out_path, "video/mp4")
+
+
+    def _handle_sample(self):
+        available = SAMPLE_FILE and os.path.exists(SAMPLE_FILE)
+        dubbed = SAMPLE_DUBBED and os.path.exists(SAMPLE_DUBBED)
+        info = {"available": available, "dubbed": dubbed}
+        if available:
+            sz = os.path.getsize(SAMPLE_FILE)
+            info["size"] = sz
+            info["filename"] = os.path.basename(SAMPLE_FILE)
+            info["size_mb"] = round(sz / (1024 * 1024), 1)
+        self._json(info)
+
+    def _handle_sample_download(self):
+        if SAMPLE_FILE and os.path.exists(SAMPLE_FILE):
+            self._file_response(SAMPLE_FILE, "video/mp4")
+        else:
+            self._json({"error": "Sample not found"}, 404)
 
 
 def start_server(port=8080):
