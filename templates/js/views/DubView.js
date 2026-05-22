@@ -1,0 +1,157 @@
+const LANGUAGES = [
+  { code: "en", name: "English" },
+  { code: "es", name: "Spanish" },
+  { code: "fr", name: "French" },
+  { code: "de", name: "German" },
+  { code: "it", name: "Italian" },
+  { code: "pt", name: "Portuguese" },
+  { code: "ru", name: "Russian" },
+  { code: "ja", name: "Japanese" },
+  { code: "ko", name: "Korean" },
+  { code: "zh", name: "Chinese" },
+  { code: "ar", name: "Arabic" },
+  { code: "hi", name: "Hindi" },
+  { code: "nl", name: "Dutch" },
+  { code: "pl", name: "Polish" },
+  { code: "tr", name: "Turkish" },
+  { code: "vi", name: "Vietnamese" },
+  { code: "th", name: "Thai" },
+  { code: "uk", name: "Ukrainian" },
+];
+
+const VOICES = [
+  { id: "M1", label: "Male 1" },
+  { id: "M2", label: "Male 2" },
+  { id: "M3", label: "Male 3" },
+  { id: "M4", label: "Male 4" },
+  { id: "M5", label: "Male 5" },
+  { id: "F1", label: "Female 1" },
+  { id: "F2", label: "Female 2" },
+  { id: "F3", label: "Female 3" },
+  { id: "F4", label: "Female 4" },
+  { id: "F5", label: "Female 5" },
+];
+
+function DubView({ addToast }) {
+  const [file, setFile] = React.useState(null);
+  const [filePath, setFilePath] = React.useState(null);
+  const [uploading, setUploading] = React.useState(false);
+  const [targetLang, setTargetLang] = React.useState("es");
+  const [voice, setVoice] = React.useState("");
+  const [jobs, setJobs] = React.useState({});
+  const [activeJob, setActiveJob] = React.useState(null);
+
+  React.useEffect(() => {
+    if (typeof lucide !== "undefined") lucide.createIcons();
+  }, [file, uploading, jobs, activeJob]);
+
+  React.useEffect(() => {
+    const stop = API.pollJobs((all) => {
+      setJobs(all);
+      const running = Object.values(all).find(j => j.status === "queued" || j.status === "processing");
+      if (running) setActiveJob(running.id);
+      else if (activeJob && all[activeJob]?.status === "done") {
+        addToast("Dubbing complete!", "success");
+      }
+    });
+    return stop;
+  }, []);
+
+  const handleFile = async (f) => {
+    setFile(f);
+    if (!f) { setFilePath(null); return; }
+    setUploading(true);
+    const toastId = addToast("Uploading...", "loading", 0);
+    try {
+      const r = await API.upload(f);
+      if (r.ok) {
+        setFilePath(r.path);
+        addToast("File uploaded", "success");
+      } else {
+        addToast(r.error || "Upload failed", "error");
+      }
+    } catch (e) {
+      addToast("Upload error: " + e.message, "error");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDub = async () => {
+    if (!filePath) return;
+    const toastId = addToast("Starting dubbing job...", "loading", 0);
+    try {
+      const r = await API.dub({
+        file_path: filePath,
+        target_lang: targetLang,
+        voice: voice || null,
+      });
+      if (r.ok) {
+        setActiveJob(r.job_id);
+      } else {
+        addToast(r.error || "Failed to start", "error");
+      }
+    } catch (e) {
+      addToast("Error: " + e.message, "error");
+    }
+  };
+
+  const active = activeJob ? jobs[activeJob] : null;
+
+  return React.createElement("div", { className: "max-w-xl mx-auto px-4 py-10 space-y-6" },
+
+    React.createElement("div", { className: "text-center" },
+      React.createElement("h1", { className: "text-2xl font-semibold text-stone-800" }, "Dubb CLI"),
+      React.createElement("p", { className: "text-sm text-stone-400 mt-1" },
+        "Upload a video, pick a language, get it dubbed"
+      )
+    ),
+
+    React.createElement(UploadZone, { onFile: handleFile, disabled: uploading }),
+
+    filePath && React.createElement("div", { className: "fade-in space-y-4" },
+
+      React.createElement("div", { className: "flex flex-col gap-1.5" },
+        React.createElement("label", { className: "text-xs font-medium text-stone-500 uppercase tracking-wider" }, "Dub to"),
+        React.createElement("select", {
+          value: targetLang,
+          onChange: (e) => setTargetLang(e.target.value),
+          className: "select select-bordered w-full bg-white",
+        },
+          LANGUAGES.map(l =>
+            React.createElement("option", { key: l.code, value: l.code }, l.name)
+          )
+        )
+      ),
+
+      React.createElement("div", { className: "flex flex-col gap-1.5" },
+        React.createElement("label", { className: "text-xs font-medium text-stone-500 uppercase tracking-wider" }, "Voice"),
+        React.createElement("select", {
+          value: voice,
+          onChange: (e) => setVoice(e.target.value),
+          className: "select select-bordered w-full bg-white",
+        },
+          React.createElement("option", { value: "" }, "Auto"),
+          VOICES.map(v =>
+            React.createElement("option", { key: v.id, value: v.id }, v.label)
+          )
+        )
+      ),
+
+      React.createElement("button", {
+        onClick: handleDub,
+        disabled: !!active,
+        className: "btn btn-neutral w-full gap-2"
+      },
+        React.createElement("i", { "data-lucide": "wand-2", className: "w-4 h-4" }),
+        active ? "Dubbing in progress..." : "Dub Video"
+      )
+    ),
+
+    React.createElement(DubProgress, {
+      job: active,
+      onDownload: () => { window.open(API.downloadUrl(activeJob), "_blank"); },
+    })
+
+  );
+}
