@@ -2,6 +2,7 @@ __pycache__/
 .venv/
 *.wav
 *.mp4
+!sample/*.mp4
 *.webm
 *.avi
 *.mov
