@@ -2,6 +2,8 @@ import json
 import logging
 import mimetypes
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import shutil
 import sys
 import threading
@@ -22,9 +24,9 @@ PROCESSING = None
 RATE_LIMIT = {}
 LOCK = threading.Lock()
 
-MAX_SIZE = 10 * 1024 * 1024
+MAX_SIZE = int(os.getenv("DUBB_MAX_SIZE", "10")) * 1024 * 1024
 MAX_QUEUED = 5
-RATE_WINDOW = 30 * 60
+RATE_WINDOW = int(os.getenv("DUBB_RATE_WINDOW", "30")) * 60
 ARTIFACT_TTL = 2 * 3600
 CLEANUP_INTERVAL = 5 * 60
 
